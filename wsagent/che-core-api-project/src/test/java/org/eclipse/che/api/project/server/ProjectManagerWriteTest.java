@@ -33,6 +33,7 @@ import org.eclipse.che.api.workspace.shared.dto.ProjectConfigDto;
 import org.eclipse.che.api.workspace.shared.dto.SourceStorageDto;
 import org.eclipse.che.dto.server.DtoFactory;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
@@ -133,7 +134,7 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
     }
 
     @Test
-    public void testCreateBatchProjectsWhenSourceCodeIsNotReachable() throws Exception {
+    public void testCreateProjectWhenSourceCodeIsNotReachable() throws Exception {
         final String projectPath = "/testProject";
         final SourceStorageDto source = DtoFactory.newDto(SourceStorageDto.class).withLocation("someLocation").withType("importType");
         final NewProjectConfigDto config = createProjectConfigObject("testProject1", projectPath, BaseProjectType.ID, source);
@@ -141,15 +142,65 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
         final List<NewProjectConfig> configs = new ArrayList<>(1);
         configs.add(config);
 
-        pm.createBatchProjects(configs, false);
+        try {
+            pm.createBatchProjects(configs, false);
+            fail("Exception should be thrown when source code is not reachable");
+        } catch (Exception e) {
+            assertEquals(0, projectRegistry.getProjects().size());
+            assertNull(projectRegistry.getProject(projectPath));
+            assertNull(pm.getProjectsRoot().getChild(projectPath));
+        }
+    }
 
-        final RegisteredProject project = projectRegistry.getProject(projectPath);
-        final List<Problem> problems = project.getProblems();
-        checkProjectExist(projectPath);
-        assertEquals(1, problems.size());
-        assertEquals(10, problems.get(0).code);
-        assertTrue(project.getMixins().isEmpty());
-        assertEquals(1, projectRegistry.getProjects().size());
+    @Test
+    public void shouldRollbackCreatingBatchProjects() throws Exception {
+        // we should rollback operation of creating batch projects when we have not source code for at least one project
+        // For example: two projects were success created, but we could not get source code for third configuration
+        // At this use case we should rollback the operation and clean up all created projects
+
+        final String projectPath1 = "/testProject1";
+        final String projectPath2 = "/testProject2";
+        final String projectPath3 = "/testProject3";
+        final String importType1 = "importType1";
+        final String importType2 = "importType2";
+
+        final String [] paths1 = {"folder1/", "folder1/file1.txt"};
+        final List<String> children1 = new ArrayList<>(Arrays.asList(paths1));
+        registerImporter(importType1, prepareZipArchiveBasedOn(children1));
+
+        final String [] paths2 = {"folder2/", "folder2/file2.txt"};
+        final List<String> children2 = new ArrayList<>(Arrays.asList(paths2));
+        registerImporter(importType2, prepareZipArchiveBasedOn(children2));
+
+        final SourceStorageDto source1 = DtoFactory.newDto(SourceStorageDto.class).withLocation("someLocation").withType(importType1);
+        final NewProjectConfigDto config1 = createProjectConfigObject("testProject1", projectPath1, BaseProjectType.ID, source1);
+
+        final SourceStorageDto source2 = DtoFactory.newDto(SourceStorageDto.class).withLocation("someLocation").withType(importType2);
+        final NewProjectConfigDto config2 = createProjectConfigObject("testProject2", projectPath2, BaseProjectType.ID, source2);
+
+        final SourceStorageDto source = DtoFactory.newDto(SourceStorageDto.class).withLocation("someLocation").withType("importType");
+        final NewProjectConfigDto config3 = createProjectConfigObject("testProject3", projectPath3, BaseProjectType.ID, source);
+
+        final List<NewProjectConfig> configs = new ArrayList<>(2);
+        configs.add(config1); //will be success created
+        configs.add(config2); //will be success created
+        configs.add(config3); //we be failed - we have not registered importer - source code will not be imported
+
+        try {
+            pm.createBatchProjects(configs, false);
+            fail("We should rollback operation of creating batch projects when we could not get source code for at least one project");
+        } catch (Exception e) {
+            assertEquals(0, projectRegistry.getProjects().size());
+
+            assertNull(projectRegistry.getProject(projectPath1));
+            assertNull(pm.getProjectsRoot().getChild(projectPath1));
+
+            assertNull(projectRegistry.getProject(projectPath2));
+            assertNull(pm.getProjectsRoot().getChild(projectPath2));
+
+            assertNull(projectRegistry.getProject(projectPath3));
+            assertNull(pm.getProjectsRoot().getChild(projectPath3));
+        }
     }
 
     @Test
@@ -322,19 +373,20 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
     }
 
     @Test
-    public void shouldThrowNotFoundExceptionAtCreatingBatchProjectsWhenParentDoesNotExist() throws Exception {
-        final String path = "/parent/somePath";
-        final NewProjectConfig config = createProjectConfigObject("project", path, BaseProjectType.ID, null);
+    public void shouldCreateParentFolderAtCreatingProjectWhenParentDoesNotExist() throws Exception {
+        final String nonExistentParentPath = "/rootProject";
+        final String innerProjectPath = "/rootProject/innerProject";
 
-        final List<NewProjectConfig> configs = new ArrayList<>(1);
+        final NewProjectConfig config = createProjectConfigObject(null, innerProjectPath, null, null);
+
+        final List<NewProjectConfig> configs = new ArrayList<>(2);
         configs.add(config);
 
-        try {
-            pm.createBatchProjects(configs, false);
-            fail("NotFoundException should be thrown : Parent for project does not exist");
-        } catch (NotFoundException e) {
-            assertEquals(0, projectRegistry.getProjects().size());
-        }
+        pm.createBatchProjects(configs, false);
+
+        checkProjectExist(nonExistentParentPath);
+        checkProjectExist(innerProjectPath);
+        assertEquals(2, projectRegistry.getProjects().size());
     }
 
     @Test
@@ -481,21 +533,22 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
         // If project type has provided required attributes,
         // respective CreateProjectHandler MUST be provided
 
-        Map<String, List<String>> attributes = new HashMap<>();
+        final String path = "/testCreateProjectWithRequiredProvidedAttribute";
+        final String projectTypeId = "pt3";
+        final Map<String, List<String>> attributes = new HashMap<>();
         attributes.put("pt2-var2", new AttributeValue("test").getList());
-        ProjectConfig pc =
-                new NewProjectConfigImpl("/testCreateProjectWithRequiredProvidedAttribute", "pt3", null, "name", "descr", attributes, null,
-                                         null);
+        final ProjectConfig pc = new NewProjectConfigImpl(path, projectTypeId, null, "name", "descr", attributes, null, null);
 
         pm.createProject(pc, null);
 
-        RegisteredProject project = projectRegistry.getProject("testCreateProjectWithRequiredProvidedAttribute");
-        assertEquals("pt3", project.getType());
+        final RegisteredProject project = projectRegistry.getProject(path);
+        assertEquals(projectTypeId, project.getType());
         assertNotNull(project.getBaseFolder().getChild("file1"));
         assertEquals("pt2-provided1", project.getAttributes().get("pt2-provided1").get(0));
     }
 
     @Test
+    @Ignore //TODO what new behavior we should have for use case when we have not generator for given project type
     public void testFailCreateProjectWithNoRequiredGenerator() throws Exception {
         // SPECS:
         // If there are no respective CreateProjectHandler ServerException will be thrown
@@ -538,8 +591,7 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
         // with problem code 12(Primary type "someType" is not registered. Base Project Type assigned.)
         // when primary project type is not registered in PT registry
         final String path = "/testInvalidPTProjectCreateFailed";
-        ProjectConfig pc =
-                new NewProjectConfigImpl(path, "invalid", null, "name", "descr", null, null, null);
+        ProjectConfig pc = new NewProjectConfigImpl(path, "invalid", null, "name", "descr", null, null, null);
 
         pm.createProject(pc, null);
 
@@ -568,10 +620,9 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
         ms.add("invalid");
 
         pc = new NewProjectConfigImpl(path, "blank", ms, "name", "descr", null, null, null);
-
         pm.createProject(pc, null);
-        project = projectRegistry.getProject(path);
 
+        project = projectRegistry.getProject(path);
         assertNotNull(project);
         assertNotNull(pm.getProjectsRoot().getChild(path));
         assertTrue(project.getMixins().isEmpty());
@@ -586,23 +637,30 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
     @Test
     public void testConflictAttributesProjectCreateFailed() throws Exception {
         // SPECS:
-        // If there are attributes with the same name in primary and mixin PT or between mixins
-        // Project creation failed with ProjectTypeConstraintException
+        // project will be created with problem code 13(Attribute name conflict)
+        // when there are attributes with the same name in primary and mixin PT or between mixins
 
+        final String path = "/testConflictAttributesProjectCreateFailed";
+        final String projectTypeId = "pt2";
+        final String mixin = "m2";
+        final List<String> ms = new ArrayList<>(1);
+        ms.add(mixin);
 
-        List<String> ms = new ArrayList<>();
-        ms.add("m2");
+        ProjectConfig pc = new NewProjectConfigImpl(path, projectTypeId, ms, "name", "descr", null, null, null);
+        pm.createProject(pc, null);
 
-        ProjectConfig pc = new NewProjectConfigImpl("/testConflictAttributesProjectCreateFailed", "pt2", ms, "name", "descr", null, null, null);
-        try {
-            pm.createProject(pc, null);
-            fail("ProjectTypeConstraintException: Attribute name conflict. Duplicated attributes detected /testConflictAttributesProjectCreateFailed Attribute pt2-const1 declared in m2 already declared in pt2");
-        } catch (ServerException e) {
-        }
+        final RegisteredProject project = projectRegistry.getProject(path);
+        assertNotNull(project);
+        assertNotNull(pm.getProjectsRoot().getChild(path));
 
-        //assertNull(projectRegistry.folder("/testConflictAttributesProjectCreateFailed"));
+        final List<String> mixins = project.getMixins();
+        assertFalse(mixins.isEmpty());
+        assertEquals(mixin, mixins.get(0));
 
-        assertNull(pm.getProjectsRoot().getChild("/testConflictAttributesProjectCreateFailed"));
+        final List<Problem> problems = project.getProblems();
+        assertNotNull(problems);
+        assertFalse(problems.isEmpty());
+        assertEquals(13, problems.get(0).code);
     }
 
     @Test
@@ -966,7 +1024,6 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
                 throws ForbiddenException, ConflictException, ServerException {
             FolderEntry baseFolder = new FolderEntry(vfsProvider.getVirtualFileSystem().getRoot().createFolder(projectPath.toString()));
             baseFolder.createFolder("file1");
-
         }
 
         @Override
@@ -974,5 +1031,4 @@ public class ProjectManagerWriteTest extends WsAgentTestBase {
             return "pt3";
         }
     }
-
 }

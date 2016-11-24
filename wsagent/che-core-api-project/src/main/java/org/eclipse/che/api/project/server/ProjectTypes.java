@@ -111,7 +111,7 @@ public class ProjectTypes {
                 final String attrName = attr.getName();
                 if (attributeDefs.containsKey(attrName)) {
                     this.problems.add(new Problem(13,
-                                                  format("Attribute name conflict. Duplicated attributes detected %s. " +
+                                                  format("Attribute name conflict. Duplicated attributes detected for %s. " +
                                                          "Attribute %s declared in %s already declared in %s. Skipped.",
                                                          projectPath, attrName, mixin.getId(), attributeDefs.get(attrName).getProjectType())));
                     continue;
@@ -190,7 +190,7 @@ public class ProjectTypes {
                     final String attrName = attr.getName();
                     if (attributeDefs.containsKey(attrName)) {
                         problems.add(new Problem(13,
-                                                 format("Attribute name conflict. Duplicated attributes detected %s. " +
+                                                 format("Attribute name conflict. Duplicated attributes detected for %s. " +
                                                         "Attribute %s declared in %s already declared in %s. Skipped.",
                                                         projectPath, attrName, pt.getId(), attributeDefs.get(attrName).getProjectType())));
                     }
